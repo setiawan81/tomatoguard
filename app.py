@@ -346,10 +346,10 @@ def load_model():
         with open(CLASS_NAMES_PATH) as f:
             class_names = json.load(f)
 
-    # ── Prioritas 1: TFLite via tflite_runtime ───────────────────────────
+    # ── Prioritas 1: TFLite via ai_edge_litert (modern tflite-runtime) ───
     if os.path.exists(TFLITE_MODEL_PATH):
         try:
-            import tflite_runtime.interpreter as tflite
+            import ai_edge_litert.interpreter as tflite
             interpreter = tflite.Interpreter(model_path=TFLITE_MODEL_PATH)
             interpreter.allocate_tensors()
             if class_names is None:

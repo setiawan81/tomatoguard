@@ -1,6 +1,4 @@
-# pyrefly: ignore [missing-import]
 import streamlit as st
-# pyrefly: ignore [missing-import]
 import numpy as np
 from PIL import Image
 import os
@@ -291,16 +289,33 @@ def get_info(class_name):
     def normalize(s):
         return s.lower().replace("_", " ").replace("-", " ").strip()
     cn = normalize(class_name)
+
+    # Prioritas 1: exact match (setelah normalisasi)
+    for key in DISEASE_INFO:
+        kn = normalize(key)
+        if cn == kn:
+            return DISEASE_INFO[key]
+
+    # Prioritas 2: best word overlap (kunci dengan overlap terbanyak menang)
+    cn_words = set(cn.split())
+    best_key = None
+    best_overlap = 0
+    for key in DISEASE_INFO:
+        kn_words = set(normalize(key).split())
+        overlap = len(cn_words & kn_words)
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_key = key
+
+    if best_key and best_overlap >= 2:
+        return DISEASE_INFO[best_key]
+
+    # Prioritas 3: substring match
     for key in DISEASE_INFO:
         kn = normalize(key)
         if kn in cn or cn in kn:
             return DISEASE_INFO[key]
-    # Fallback: cocokkan minimal 2 kata
-    cn_words = set(cn.split())
-    for key in DISEASE_INFO:
-        kn_words = set(normalize(key).split())
-        if len(cn_words & kn_words) >= 2:
-            return DISEASE_INFO[key]
+
     return {
         "label": class_name.replace("_", " "),
         "emoji": "🍃",

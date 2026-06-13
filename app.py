@@ -408,6 +408,87 @@ def predict(model, class_names, image: Image.Image, top_k=3, model_type="tflite"
     return results
 
 
+# ─── Validasi gambar (apakah benar daun tomat?) ──────────────────────────────
+def validate_tomato_leaf(image: Image.Image):
+    """
+    Memvalidasi apakah gambar yang diupload kemungkinan berisi daun tomat.
+    Menggunakan analisis warna (HSV), saturasi, kecerahan, dan variasi warna.
+    
+    Returns: (is_valid, reasons, score)
+      - is_valid: True jika gambar lolos validasi
+      - reasons:  list alasan jika gagal
+      - score:    skor validasi 0–100
+    """
+    img = image.convert("RGB").resize((224, 224))
+    arr = np.array(img, dtype=np.float32)
+
+    # ── Analisis HSV untuk deteksi warna hijau (ciri khas daun) ──────────
+    hsv_img = img.convert("HSV")
+    hsv_arr = np.array(hsv_img)
+    h, s, v = hsv_arr[:, :, 0], hsv_arr[:, :, 1], hsv_arr[:, :, 2]
+    # PIL HSV: H=0-255 (maps to 0°-360°), S=0-255, V=0-255
+    # Hijau ~60°-150° → PIL H ~42-106
+    # Termasuk hijau kecoklatan (daun sakit) → perlebar ke H ~20-120
+    green_mask = (h >= 20) & (h <= 120) & (s >= 25) & (v >= 25)
+    green_ratio = np.sum(green_mask) / (224 * 224)
+
+    # ── Saturasi rata-rata (dokumen/kertas punya saturasi sangat rendah) ──
+    mean_saturation = float(np.mean(s))
+
+    # ── Variasi warna (gambar alam punya variasi lebih tinggi) ───────────
+    color_std = float(np.std(arr, axis=(0, 1)).mean())
+
+    # ── Kecerahan & keseragaman (kertas = terang + seragam) ──────────────
+    gray = np.mean(arr, axis=2)
+    mean_brightness = float(np.mean(gray))
+    brightness_std = float(np.std(gray))
+
+    # ── Rasio piksel hampir putih (kertas/dokumen) ───────────────────────
+    white_mask = (arr[:, :, 0] > 200) & (arr[:, :, 1] > 200) & (arr[:, :, 2] > 200)
+    white_ratio = float(np.sum(white_mask)) / (224 * 224)
+
+    # ── Logika keputusan ─────────────────────────────────────────────────
+    reasons = []
+    score = 100
+
+    # Cek 1: Konten hijau rendah
+    if green_ratio < 0.05:
+        reasons.append(f"Konten warna hijau sangat rendah ({green_ratio*100:.1f}%)")
+        score -= 40
+    elif green_ratio < 0.12:
+        reasons.append(f"Konten warna hijau rendah ({green_ratio*100:.1f}%)")
+        score -= 20
+
+    # Cek 2: Saturasi rendah (dokumen grayscale)
+    if mean_saturation < 20:
+        reasons.append(f"Saturasi warna sangat rendah (kemungkinan dokumen/kertas)")
+        score -= 35
+    elif mean_saturation < 35:
+        reasons.append(f"Saturasi warna rendah")
+        score -= 15
+
+    # Cek 3: Terlalu banyak area putih (kertas/dokumen)
+    if white_ratio > 0.50:
+        reasons.append(f"Terlalu banyak area putih ({white_ratio*100:.0f}%) — kemungkinan foto kertas/dokumen")
+        score -= 30
+    elif white_ratio > 0.35:
+        reasons.append(f"Area putih cukup banyak ({white_ratio*100:.0f}%)")
+        score -= 15
+
+    # Cek 4: Terang + seragam = kemungkinan dokumen
+    if mean_brightness > 200 and brightness_std < 40:
+        reasons.append("Gambar terlalu terang dan seragam (ciri khas dokumen/kertas)")
+        score -= 25
+
+    # Cek 5: Variasi warna terlalu rendah
+    if color_std < 18:
+        reasons.append("Variasi warna sangat rendah (bukan ciri khas gambar alam)")
+        score -= 20
+
+    is_valid = score >= 50
+    return is_valid, reasons, max(score, 0)
+
+
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 🍅 TomatoGuard")
@@ -504,50 +585,96 @@ with col_result:
         </div>
         """, unsafe_allow_html=True)
     else:
-        with st.spinner("🔄 Menganalisis gambar..."):
+        with st.spinner("🔄 Memvalidasi & menganalisis gambar..."):
+            # Langkah 1: Validasi apakah gambar adalah daun tomat
+            is_valid_leaf, validation_reasons, validation_score = validate_tomato_leaf(image)
+
+            # Langkah 2: Jalankan prediksi model
             results = predict(model, class_names, image, top_k=top_k, model_type=model_type)
 
         top_class, top_conf = results[0]
-        info = get_info(top_class)
-        is_healthy = "healthy" in top_class.lower()
 
-        # Main result card
-        box_cls = "result-healthy" if is_healthy else "result-disease"
-        badge_html = f'<span class="badge {info["badge"]}">{info["severity"]}</span>'
+        # ── Jika gambar TIDAK lolos validasi → tolak ─────────────────────
+        if not is_valid_leaf:
+            st.markdown(f"""
+            <div style="
+                background: linear-gradient(135deg, #FEF3C7, #FDE68A);
+                border-left: 5px solid #D97706;
+                border-radius: 12px;
+                padding: 24px 28px;
+                margin: 16px 0;
+            ">
+                <p style="font-family:'Syne',sans-serif; font-size:1.3rem; font-weight:700; margin:0 0 8px 0; color:#92400E;">
+                    🚫 Gambar Bukan Daun Tomat
+                </p>
+                <p style="font-size:0.95rem; color:#78350F; margin:0 0 12px 0;">
+                    Sistem mendeteksi bahwa gambar ini kemungkinan <strong>bukan foto daun tomat</strong>.
+                    Skor validasi: <strong>{validation_score}/100</strong>
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
 
-        st.markdown(f"""
-        <div class="{box_cls}">
-            <p class="result-label">{info["emoji"]} {info["label"]}</p>
-            <p class="result-conf">Confidence: <strong>{top_conf*100:.1f}%</strong> &nbsp;|&nbsp; Tingkat Keparahan: {badge_html}</p>
-        </div>
-        """, unsafe_allow_html=True)
+            # Tampilkan alasan penolakan
+            with st.expander("🔍 Detail alasan penolakan", expanded=True):
+                for reason in validation_reasons:
+                    st.markdown(f"- ⚠️ {reason}")
 
-        # Confidence gauge
-        st.markdown("**Confidence Score**")
-        st.progress(min(top_conf, 1.0))
+            st.info(
+                "💡 **Tips upload gambar yang benar:**\n\n"
+                "- Pastikan foto berisi **daun tomat** secara jelas\n"
+                "- Ambil foto dengan **pencahayaan cukup**\n"
+                "- Hindari foto dokumen, kertas, atau objek lain\n"
+                "- Fokuskan kamera pada **area daun** yang ingin diperiksa"
+            )
+        else:
+            # ── Gambar lolos validasi → tampilkan hasil prediksi ─────────
+            info = get_info(top_class)
+            is_healthy = "healthy" in top_class.lower()
 
-        # Warning jika confidence rendah
-        if top_conf < conf_threshold:
-            st.warning(f"⚠️ Confidence rendah ({top_conf*100:.1f}%). Coba foto yang lebih jelas.")
+            # Main result card
+            box_cls = "result-healthy" if is_healthy else "result-disease"
+            badge_html = f'<span class="badge {info["badge"]}">{info["severity"]}</span>'
 
-        # Description & treatment
-        st.markdown(f"**📋 Deskripsi:** {info['desc']}")
-        st.markdown(f"**💊 Penanganan:** {info['treatment']}")
+            st.markdown(f"""
+            <div class="{box_cls}">
+                <p class="result-label">{info["emoji"]} {info["label"]}</p>
+                <p class="result-conf">Confidence: <strong>{top_conf*100:.1f}%</strong> &nbsp;|&nbsp; Tingkat Keparahan: {badge_html}</p>
+            </div>
+            """, unsafe_allow_html=True)
 
-        # Top-K
-        if top_k > 1:
-            st.markdown("---")
-            st.markdown("**Top Prediksi Lainnya**")
-            for rank, (cls, conf) in enumerate(results, 1):
-                inf = get_info(cls)
-                st.markdown(f"""
-                <div class="topk-item">
-                    <span class="topk-rank">#{rank}</span>
-                    <span class="topk-name">{inf['emoji']} {inf['label']}</span>
-                    <span class="topk-score">{conf*100:.1f}%</span>
-                </div>
-                """, unsafe_allow_html=True)
-                st.progress(conf)
+            # Confidence gauge
+            st.markdown("**Confidence Score**")
+            st.progress(min(top_conf, 1.0))
+
+            # Warning jika confidence rendah
+            if top_conf < conf_threshold:
+                st.warning(f"⚠️ Confidence rendah ({top_conf*100:.1f}%). Coba foto yang lebih jelas.")
+
+            # Validasi skor rendah tapi masih lolos — beri peringatan ringan
+            if validation_score < 70:
+                st.warning(
+                    f"⚠️ Skor validasi gambar agak rendah ({validation_score}/100). "
+                    "Hasil mungkin kurang akurat. Pastikan foto berisi daun tomat yang jelas."
+                )
+
+            # Description & treatment
+            st.markdown(f"**📋 Deskripsi:** {info['desc']}")
+            st.markdown(f"**💊 Penanganan:** {info['treatment']}")
+
+            # Top-K
+            if top_k > 1:
+                st.markdown("---")
+                st.markdown("**Top Prediksi Lainnya**")
+                for rank, (cls, conf) in enumerate(results, 1):
+                    inf = get_info(cls)
+                    st.markdown(f"""
+                    <div class="topk-item">
+                        <span class="topk-rank">#{rank}</span>
+                        <span class="topk-name">{inf['emoji']} {inf['label']}</span>
+                        <span class="topk-score">{conf*100:.1f}%</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    st.progress(conf)
 
 # ─── Info kelas ───────────────────────────────────────────────────────────────
 st.markdown("---")

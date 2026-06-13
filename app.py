@@ -198,9 +198,6 @@ hr { border-color: #F3F4F6; margin: 24px 0; }
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 IMG_SIZE = (224, 224)
-TFLITE_MODEL_PATH = "model/tomato_disease_classifier.tflite"
-H5_MODEL_PATH = "model/tomato_disease_classifier_final_fixed.h5"
-CLASS_NAMES_PATH = "model/class_names.json"
 
 DISEASE_INFO = {
     "Tomato_Bacterial_spot": {
@@ -327,6 +324,12 @@ def get_info(class_name):
 
 
 # ─── Load model (dual-mode: TFLite preferred, TensorFlow fallback) ───────────
+# Gunakan absolute path agar aman di Streamlit Cloud
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TFLITE_MODEL_PATH = os.path.join(_BASE_DIR, "model", "tomato_disease_classifier.tflite")
+H5_MODEL_PATH = os.path.join(_BASE_DIR, "model", "tomato_disease_classifier_final_fixed.h5")
+CLASS_NAMES_PATH = os.path.join(_BASE_DIR, "model", "class_names.json")
+
 @st.cache_resource(show_spinner=False)
 def load_model():
     """
@@ -343,7 +346,7 @@ def load_model():
         with open(CLASS_NAMES_PATH) as f:
             class_names = json.load(f)
 
-    # ── Prioritas 1: TFLite ──────────────────────────────────────────────
+    # ── Prioritas 1: TFLite via tflite_runtime ───────────────────────────
     if os.path.exists(TFLITE_MODEL_PATH):
         try:
             import tflite_runtime.interpreter as tflite
@@ -353,18 +356,21 @@ def load_model():
                 output_shape = interpreter.get_output_details()[0]['shape']
                 class_names = [f"Kelas_{i}" for i in range(output_shape[-1])]
             return interpreter, class_names, "tflite"
-        except ImportError:
-            # tflite_runtime tidak tersedia, coba lewat tensorflow
-            try:
-                import tensorflow as tf
-                interpreter = tf.lite.Interpreter(model_path=TFLITE_MODEL_PATH)
-                interpreter.allocate_tensors()
-                if class_names is None:
-                    output_shape = interpreter.get_output_details()[0]['shape']
-                    class_names = [f"Kelas_{i}" for i in range(output_shape[-1])]
-                return interpreter, class_names, "tflite"
-            except ImportError:
-                pass  # Lanjut ke fallback .h5
+        except Exception as e:
+            st.warning(f"⚠️ TFLite runtime gagal: {e}")
+
+    # ── Prioritas 1b: TFLite via tensorflow ──────────────────────────────
+    if os.path.exists(TFLITE_MODEL_PATH):
+        try:
+            import tensorflow as tf
+            interpreter = tf.lite.Interpreter(model_path=TFLITE_MODEL_PATH)
+            interpreter.allocate_tensors()
+            if class_names is None:
+                output_shape = interpreter.get_output_details()[0]['shape']
+                class_names = [f"Kelas_{i}" for i in range(output_shape[-1])]
+            return interpreter, class_names, "tflite"
+        except Exception as e:
+            st.warning(f"⚠️ TFLite via TensorFlow gagal: {e}")
 
     # ── Prioritas 2: TensorFlow .h5 ─────────────────────────────────────
     if os.path.exists(H5_MODEL_PATH):
@@ -374,8 +380,8 @@ def load_model():
             if class_names is None:
                 class_names = [f"Kelas_{i}" for i in range(model.output_shape[-1])]
             return model, class_names, "tensorflow"
-        except ImportError:
-            pass
+        except Exception as e:
+            st.warning(f"⚠️ TensorFlow gagal: {e}")
 
     return None, None, None
 

@@ -1,0 +1,6 @@
+# Binary files - jangan ubah line endings
+*.tflite binary
+*.h5 binary
+*.pkl binary
+*.pb binary
+*.onnx binary
